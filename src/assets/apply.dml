@@ -7,6 +7,15 @@
 %%% Execution is delegated per task: executor=pi calls the pi_agent_step bridge;
 %%% executor=dml uses task/N with the current model. Checks are declarative:
 %%% exists(Path), cmd(Command), model(Question).
+%%%
+%%% Boundary enforcement: when any task declares allowed(Paths), the union of all
+%%% declared boundaries constrains the whole apply. Changed files are read once
+%%% per attempt via the approved command "git diff --name-only HEAD" (HEAD is
+%%% the pre-apply state because apply refuses dirty trees and commits happen
+%%% after). A changed path outside the union fails the task with the violating
+%%% paths as evidence. No declared boundaries: gate inert. Diff command
+%%% unavailable: the gate degrades to a diagnostic and never blocks.
+%%% Workflow state under .pi/deepclause/ is exempt (it is the apply's own bookkeeping).
 
 :- consult('.pi/deepclause/lib/specs.dml').
 
@@ -54,7 +63,7 @@ run_plan(Change, Max, Report) :-
     length(Remaining, RemainingCount),
     format(string(Start), "apply ~w: ~w tasks, ~w remaining, max ~w attempts", [Change, Total, RemainingCount, Max]),
     output(Start),
-    run_all(TasksPath, Change, Remaining, Max, Statuses0, Statuses),
+    run_all(Tasks, TasksPath, Change, Remaining, Max, Statuses0, Statuses),
     sp_task_statuses(Dir, FinalStatuses),
     findall(Id, (member(plan_task(Id, _), Tasks), \+ sp_status_done(FinalStatuses, Id)), Outstanding),
     length(Outstanding, OutstandingCount),
@@ -72,20 +81,20 @@ run_plan(Change, Max, Report) :-
     append(Body0, [RollbackLine], Body),
     atomics_to_string(Body, "\n", Report).
 
-run_all(_, _, [], _, Statuses, Statuses).
-run_all(TasksPath, Change, [plan_task(Id, Props)|Rest], Max, Statuses0, Statuses) :-
-    run_task(TasksPath, Statuses0, Change, Id, Props, Max, Statuses1),
-    run_all(TasksPath, Change, Rest, Max, Statuses1, Statuses).
+run_all(_, _, _, [], _, Statuses, Statuses).
+run_all(Tasks, TasksPath, Change, [plan_task(Id, Props)|Rest], Max, Statuses0, Statuses) :-
+    run_task(Tasks, TasksPath, Statuses0, Change, Id, Props, Max, Statuses1),
+    run_all(Tasks, TasksPath, Change, Rest, Max, Statuses1, Statuses).
 
-run_task(TasksPath, Statuses0, Change, Id, Props, Max, Statuses) :-
-    attempt(TasksPath, Statuses0, Change, Id, Props, 1, Max, none, Statuses).
+run_task(Tasks, TasksPath, Statuses0, Change, Id, Props, Max, Statuses) :-
+    attempt(Tasks, TasksPath, Statuses0, Change, Id, Props, 1, Max, none, Statuses).
 
-attempt(TasksPath, Statuses0, Change, Id, Props, N, Max, Feedback, Statuses) :-
+attempt(Tasks, TasksPath, Statuses0, Change, Id, Props, N, Max, Feedback, Statuses) :-
     N =< Max,
     format(string(Progress), "task ~w attempt ~w/~w", [Id, N, Max]),
     output(Progress),
     execute(Change, Id, Props, Feedback, Summary),
-    verify_task(Props, Summary, Verdict),
+    verify_task(Tasks, Props, Summary, Verdict),
     (   Verdict = ok
     ->  sp_set_status(Statuses0, Id, done(N), Statuses),
         sp_write_statuses(TasksPath, Statuses),
@@ -97,9 +106,9 @@ attempt(TasksPath, Statuses0, Change, Id, Props, N, Max, Feedback, Statuses) :-
         sp_write_statuses(TasksPath, Statuses1),
         format(string(Msg), "task ~w failed verification: ~w", [Id, Evidence]),
         output(Msg),
-        attempt(TasksPath, Statuses1, Change, Id, Props, N1, Max, Evidence, Statuses)
+        attempt(Tasks, TasksPath, Statuses1, Change, Id, Props, N1, Max, Evidence, Statuses)
     ).
-attempt(_, Statuses, _, Id, _, N, Max, _, Statuses) :-
+attempt(_, _, Statuses, _, Id, _, N, Max, _, Statuses) :-
     N > Max,
     format(string(Msg), "task ~w exhausted ~w attempts", [Id, Max]),
     output(Msg).
@@ -123,16 +132,76 @@ build_instruction(Id, Do, Expected, Feedback, Instruction) :-
         "Task ~w. ~w~nExpected result: ~w~n~nThe previous attempt failed verification: ~w~nFix only what is needed; do not redo the whole task.",
         [Id, Do, Expected, Feedback]).
 
-verify_task(Props, Summary, Verdict) :-
+verify_task(Tasks, Props, Summary, Verdict) :-
     catch(get_dict(checks, Props, Checks), _, Checks = []),
     findall(Message, (member(Check, Checks), run_check(Check, Message), Message \= ok), Failures),
     (   Summary == ""
     ->  Verdict = fail("delegated step returned no summary")
     ;   Failures == []
-    ->  Verdict = ok
+    ->  (   boundary_gate(Tasks, Evidence)
+        ->  Verdict = fail(Evidence)
+        ;   Verdict = ok
+        )
     ;   atomic_list_concat(Failures, "; ", Evidence),
         Verdict = fail(Evidence)
     ).
+
+%% boundary_gate(Tasks, Evidence) succeeds with Evidence when the apply diff
+%% escapes the union of declared allowed paths; fails when satisfied or inert.
+boundary_gate(Tasks, Evidence) :-
+    boundary_union(Tasks, Union),
+    Union \= [],
+    boundary_diff(Paths),
+    boundary_violations(Union, Paths, Violations),
+    Violations \= [],
+    atomics_to_string(Violations, ", ", PathsLine),
+    format(string(Evidence), "boundary violation: changed outside allowed paths ~w: ~w", [Union, PathsLine]).
+
+boundary_union(Tasks, Union) :-
+    findall(Pattern, (
+        member(plan_task(_, Props), Tasks),
+        catch(get_dict(allowed, Props, Paths), _, Paths = []),
+        member(Pattern, Paths)
+    ), Union0),
+    sort(Union0, Union).
+
+%% Fetch changed paths since apply start. Degrades loudly (output + fail) when
+%% the command is not approved or git is unavailable — never blocks the task.
+boundary_diff(Paths) :-
+    catch(exec(dc_verify_run(command: "git diff --name-only HEAD; git ls-files --others --exclude-standard"), Dict), Err, Dict = error(Err)),
+    (   Dict = error(Err)
+    ->  format(string(Msg), "boundary: diff unavailable (~w); gate skipped", [Err]),
+        output(Msg), fail
+    ;   get_dict(exitCode, Dict, 0)
+    ->  get_dict(stdout, Dict, Raw),
+        split_string(Raw, "\n", "\r\t ", Paths)
+    ;   get_dict(exitCode, Dict, Code),
+        format(string(Msg), "boundary: git diff exited ~w; gate skipped", [Code]),
+        output(Msg), fail
+    ).
+
+boundary_matches(Path, Pattern) :-
+    sub_string(Pattern, _, 3, 0, "/**"),
+    !,
+    sub_string(Pattern, 0, _, 3, Dir),
+    atomics_to_string([Dir, "/"], Prefix),
+    sub_string(Path, 0, _, _, Prefix).
+boundary_matches(Path, Pattern) :-
+    sub_string(Pattern, _, 2, 0, "/*"),
+    !,
+    sub_string(Pattern, 0, _, 2, Dir),
+    atomics_to_string([Dir, "/"], Prefix),
+    sub_string(Path, 0, _, _, Prefix).
+boundary_matches(Path, Pattern) :-
+    Path == Pattern.
+
+boundary_violations(Union, Paths, Violations) :-
+    findall(Path, (
+        member(Path, Paths),
+        Path \= "",
+        \+ sub_string(Path, 0, _, _, ".pi/deepclause/"),
+        \+ (member(Pattern, Union), boundary_matches(Path, Pattern))
+    ), Violations).
 
 run_check(exists(Path), Result) :-
     (   file_exists(Path)
@@ -179,7 +248,11 @@ plan_report(Change, Report) :-
         member(Check, Checks),
         check_command(Check, Command)
     ), Commands0),
-    sort(Commands0, Commands),
+    (   boundary_union(Tasks, Union), Union \= []
+    ->  Commands1 = ["git diff --name-only HEAD; git ls-files --others --exclude-standard"|Commands0]
+    ;   Commands1 = Commands0
+    ),
+    sort(Commands1, Commands),
     findall(CommandLine, (member(Command, Commands), format(string(CommandLine), "command: ~w", [Command])), CommandLines),
     format(string(Header), "apply plan ~w: ~w tasks", [Change, Total]),
     append([Header], Lines, A),

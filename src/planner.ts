@@ -18,6 +18,9 @@ export interface PlanStepSpec {
   expectedResult: string;
   satisfies: string[];
   checks: string[];
+  /** Optional path boundaries: when any step declares them, the apply-time gate
+   *  fails tasks whose changes escape the union of all declared boundaries. */
+  allowed?: string[];
 }
 
 export interface PlanSpec {
@@ -109,6 +112,15 @@ export function validatePlanSpec(
     const satisfies = stringArray(step.satisfies, `steps[${index}].satisfies`, 32);
     const checks = stringArray(step.checks, `steps[${index}].checks`, 16);
     for (const check of checks) parseCheck(check);
+    const allowed = step.allowed === undefined ? [] : stringArray(step.allowed, `steps[${index}].allowed`, 32);
+    for (const pattern of allowed) {
+      if (!/^[-A-Za-z0-9_.\/ *]+$/.test(pattern)) {
+        throw new Error(`steps[${index}].allowed entries must be workspace-relative path globs (letters, digits, dash, dot, slash, space, star): ${pattern}`);
+      }
+      if (pattern.startsWith("/") || pattern.includes("..")) {
+        throw new Error(`steps[${index}].allowed entries must not be absolute or contain ..: ${pattern}`);
+      }
+    }
     if (options.requireChecks && checks.length === 0) {
       throw new Error(`Plan step ${id} must declare at least one verification check (cmd:..., exists:... or model:...)`);
     }
@@ -135,6 +147,7 @@ export function validatePlanSpec(
       expectedResult: requireText(step.expectedResult, `steps[${index}].expectedResult`, 1_000),
       satisfies: [...new Set(satisfies)],
       checks: [...new Set(checks)],
+      ...(allowed.length > 0 ? { allowed: [...new Set(allowed)] } : {}),
     };
   });
 
@@ -204,6 +217,7 @@ export function assembleTasksDml(plan: ValidatedPlan, snapshot: PlanningSnapshot
       `    tools:     ${dmlStringList(step.requiredTools)},`,
       `    expected:  ${dmlString(step.expectedResult)},`,
       `    satisfies: ${dmlStringList(step.satisfies)},`,
+      ...(step.allowed && step.allowed.length > 0 ? [`    allowed:   ${dmlStringList(step.allowed)},`] : []),
       `    checks:    [${checks.join(", ")}]`,
       `}).`,
     ].join("\n");

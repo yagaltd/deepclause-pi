@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add an opt-in task boundary gate to the apply driver: `plan_task` steps may declare `allowed: ["src/**", ...]` path globs; when any step declares boundaries, the union of all declared boundaries constrains the whole apply, and a changed path outside the union fails the task with the violating paths as verification evidence (tracked diff plus untracked files via the approved `git diff --name-only HEAD; git ls-files --others --exclude-standard` command, surfaced automatically in the `/dc-apply` preview). No declared boundaries: inert. Diff unavailable: loud diagnostic, never blocks. Workflow state under `.pi/deepclause/` is exempt. `/dc-plan` validates and emits the field (`tests/boundary.test.ts` covers an adversarial out-of-bounds probe against a real git repo).
+
 ## 0.5.0 - 2026-09-22
 
 - Fix parallel `dc_run` calls racing past the concurrency guard: the execution slot is now claimed synchronously before any await, so simultaneous model tool calls are rejected cleanly instead of running concurrently and clobbering pi's single input dialog.

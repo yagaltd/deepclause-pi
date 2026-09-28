@@ -177,7 +177,14 @@ Scenario ids are the join key between specs and tasks. They are derived from the
 
 ## The task plan
 
-`tasks.dml` is data, not a program:
+`tasks.dml` is data, not a program. Tasks may optionally declare `allowed` path
+boundaries (workspace-relative globs: `src/**` is a directory prefix, `docs/*`
+its direct children, anything else an exact path). When any task declares
+boundaries, the union of all declared boundaries constrains the whole apply:
+a change that touches paths outside the union fails the task with the violating
+paths as evidence, and the diff command appears in the approved verification
+suite. With no boundaries the gate is inert; when the diff command is
+unavailable it degrades loudly and never blocks:
 
 ```prolog
 plan_task("1.1", task{
@@ -186,6 +193,7 @@ plan_task("1.1", task{
     tools:     ["read", "edit"],
     expected:  "src/theme/ThemeProvider.tsx exports ThemeProvider and typechecks.",
     satisfies: ["ui/theme#theme-selection"],
+    allowed:   ["src/theme/**"],
     checks:    [ exists("src/theme/ThemeProvider.tsx"),
                  cmd("npm run typecheck") ]
 }).
