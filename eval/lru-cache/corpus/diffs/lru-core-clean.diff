@@ -1,0 +1,206 @@
+diff --git a/src/lru.js b/src/lru.js
+index 089aa22..a9be03e 100644
+--- a/src/lru.js
++++ b/src/lru.js
+@@ -1 +1,34 @@
+-export class LRUCache { constructor(capacity) { this.capacity = capacity; } }
++export class LRUCache {
++  constructor(capacity) {
++    if (!Number.isInteger(capacity) || capacity < 1) {
++      throw new Error(`capacity must be an integer >= 1, got ${capacity}`);
++    }
++    this.capacity = capacity;
++    this.map = new Map(); // Map preserves insertion order; re-set moves to end
++  }
++
++  /** Store value under key; marks it most recently used; evicts LRU at capacity. */
++  put(key, value) {
++    if (this.map.has(key)) this.map.delete(key);
++    this.map.set(key, value);
++    if (this.map.size > this.capacity) {
++      const eldest = this.map.keys().next().value;
++      this.map.delete(eldest);
++    }
++    return this;
++  }
++
++  /** Return the stored value or undefined; a hit marks the entry most recently used. */
++  get(key) {
++    if (!this.map.has(key)) return undefined;
++    const value = this.map.get(key);
++    this.map.delete(key);
++    this.map.set(key, value);
++    return value;
++  }
++
++  /** Number of stored entries. */
++  get size() {
++    return this.map.size;
++  }
++}
+diff --git a/tests/lru.property.test.js b/tests/lru.property.test.js
+new file mode 100644
+index 0000000..19e57b3
+--- /dev/null
++++ b/tests/lru.property.test.js
+@@ -0,0 +1,111 @@
++import { describe, expect, it } from "vitest";
++import fc from "fast-check";
++import { LRUCache } from "../src/lru.js";
++
++/** Reference model: independent LRU semantics for cross-checking. */
++function modelStep(model, op) {
++  const { cap, entries } = model; // entries: array of [key, value], index 0 = LRU
++  if (op.t === "put") {
++    const i = entries.findIndex(([k]) => k === op.k);
++    if (i >= 0) entries.splice(i, 1);
++    entries.push([op.k, op.v]);
++    if (entries.length > cap) entries.shift();
++  } else if (op.t === "get") {
++    const i = entries.findIndex(([k]) => k === op.k);
++    if (i >= 0) {
++      const e = entries.splice(i, 1)[0];
++      entries.push(e);
++      op.result = e[1];
++    } else {
++      op.result = undefined;
++    }
++  }
++  return model;
++}
++
++const arbOp = fc.record({
++  t: fc.constantFrom("put", "get"),
++  k: fc.string({ minLength: 0, maxLength: 5 }),
++  v: fc.integer({ min: -1000, max: 1000 }),
++});
++
++describe("LRUCache properties", () => {
++  it("size never exceeds capacity, for any operation sequence", () => {
++    fc.assert(
++      fc.property(fc.integer({ min: 1, max: 8 }), fc.array(arbOp, { maxLength: 60 }), (cap, ops) => {
++        const cache = new LRUCache(cap);
++        for (const op of ops) {
++          if (op.t === "put") cache.put(op.k, op.v);
++          else cache.get(op.k);
++          if (cache.size > cap) return false;
++        }
++        return true;
++      }),
++    );
++  });
++
++  it("get returns the last put value for that key, when present", () => {
++    fc.assert(
++      fc.property(fc.integer({ min: 1, max: 8 }), fc.array(arbOp, { maxLength: 60 }), (cap, ops) => {
++        const cache = new LRUCache(cap);
++        const lastPut = new Map();
++        for (const op of ops) {
++          if (op.t === "put") {
++            cache.put(op.k, op.v);
++            lastPut.set(op.k, op.v);
++          } else {
++            const got = cache.get(op.k);
++            if (got !== undefined && !lastPut.has(op.k)) return false;
++            if (got !== undefined && got !== lastPut.get(op.k)) return false;
++          }
++        }
++        return true;
++      }),
++    );
++  });
++
++  it("matches an independent reference model exactly", () => {
++    fc.assert(
++      fc.property(fc.integer({ min: 1, max: 6 }), fc.array(arbOp, { maxLength: 50 }), (cap, ops) => {
++        const cache = new LRUCache(cap);
++        const model = { cap, entries: [] };
++        for (const op of ops) {
++          modelStep(model, op);
++          if (op.t === "put") cache.put(op.k, op.v);
++          else if (cache.get(op.k) !== op.result) return false;
++        }
++        if (cache.size !== model.entries.length) return false;
++        return true;
++      }),
++    );
++  });
++
++  it("a read entry survives the next eviction; the least recently used does not", () => {
++    fc.assert(
++      fc.property(
++        fc.integer({ min: 2, max: 6 }),
++        fc.string({ minLength: 1 }),
++        fc.string({ minLength: 1 }),
++        fc.integer(),
++        (cap, a, b, v) => {
++          fc.pre(a !== b);
++          const cache = new LRUCache(cap);
++          const used = new Set([a, b]);
++          const freshKey = () => {
++            let k;
++            do { k = `f${used.size}-${Math.random().toString(36).slice(2, 6)}`; } while (used.has(k));
++            used.add(k);
++            return k;
++          };
++          cache.put(a, v);
++          cache.put(b, v);
++          cache.get(a); // a is now most recently used; b is least
++          while (cache.size < cap) cache.put(freshKey(), v); // reach capacity without evicting
++          const next = freshKey();
++          cache.put(next, v + 1); // insert at capacity evicts the LRU (b)
++          return cache.get(a) === v && cache.get(b) === undefined;
++        },
++      ),
++    );
++  });
++});
+diff --git a/tests/lru.test.js b/tests/lru.test.js
+new file mode 100644
+index 0000000..ca4b0a5
+--- /dev/null
++++ b/tests/lru.test.js
+@@ -0,0 +1,43 @@
++import { describe, expect, it } from "vitest";
++import { LRUCache } from "../src/lru.js";
++
++describe("LRUCache capacity", () => {
++  it("evicts the least recently used entry when inserting at capacity", () => {
++    const cache = new LRUCache(2);
++    cache.put("a", 1);
++    cache.put("b", 2);
++    cache.put("c", 3);
++    expect(cache.get("a")).toBeUndefined();
++    expect(cache.get("b")).toBe(2);
++  });
++
++  it("rejects capacity below one", () => {
++    expect(() => new LRUCache(0)).toThrow();
++    expect(() => new LRUCache(-1)).toThrow();
++  });
++});
++
++describe("LRUCache lookup and store", () => {
++  it("returns the stored value", () => {
++    const cache = new LRUCache(2);
++    cache.put("k", "value");
++    expect(cache.get("k")).toBe("value");
++  });
++
++  it("returns nothing for a missing key", () => {
++    const cache = new LRUCache(2);
++    expect(cache.get("nope")).toBeUndefined();
++  });
++});
++
++describe("LRUCache recency", () => {
++  it("a read entry survives the next eviction", () => {
++    const cache = new LRUCache(2);
++    cache.put("a", 1);
++    cache.put("b", 2);
++    cache.get("a"); // a is now most recently used
++    cache.put("c", 3); // evicts b, not a
++    expect(cache.get("a")).toBe(1);
++    expect(cache.get("b")).toBeUndefined();
++  });
++});

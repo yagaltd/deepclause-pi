@@ -1,0 +1,11 @@
+node_modules/
+.pi/deepclause/lib/
+.pi/deepclause/skills/
+.pi/deepclause/plans/
+.pi/deepclause/diagrams/
+.pi/deepclause/config.json
+.pi/deepclause/AGENTS.md
+.pi/deepclause/DML_REFERENCE.md
+.pi/deepclause/baselines/
+.pi/deepclause/changes/*/change.json
+.pi/deepclause/changes/archive/*/change.json

@@ -1,0 +1,515 @@
+commit 4844d008577caed031fab26cfbb249cc6e596e1c
+Author: yagaltd <yagaltd@users.noreply.github.com>
+Date:   Mon Sep 28 14:44:41 2026 +0700
+
+    feat(apply): opt-in task boundary gate via plan_task allowed
+    
+    - union-of-allowed constrains the whole apply; violations fail the task
+      with the violating paths as retry evidence
+    - diff = tracked + untracked via one approved command, surfaced in
+      plan_report so /dc-apply includes it in the suite
+    - inert without declarations; loud degradation when the diff is
+      unavailable; .pi/deepclause/ state exempt
+    - planner validates (relative globs only) and emits the field
+    - tests/boundary.test.ts: adversarial probe against a real git repo
+    - dogfooded as change boundary-guard: 4/4 tasks verified, status OK
+
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index f4216f0..457f9d1 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -1,5 +1,9 @@
+ # Changelog
+ 
++## Unreleased
++
++- Add an opt-in task boundary gate to the apply driver: `plan_task` steps may declare `allowed: ["src/**", ...]` path globs; when any step declares boundaries, the union of all declared boundaries constrains the whole apply, and a changed path outside the union fails the task with the violating paths as verification evidence (tracked diff plus untracked files via the approved `git diff --name-only HEAD; git ls-files --others --exclude-standard` command, surfaced automatically in the `/dc-apply` preview). No declared boundaries: inert. Diff unavailable: loud diagnostic, never blocks. Workflow state under `.pi/deepclause/` is exempt. `/dc-plan` validates and emits the field (`tests/boundary.test.ts` covers an adversarial out-of-bounds probe against a real git repo).
++
+ ## 0.5.0 - 2026-09-22
+ 
+ - Fix parallel `dc_run` calls racing past the concurrency guard: the execution slot is now claimed synchronously before any await, so simultaneous model tool calls are rejected cleanly instead of running concurrently and clobbering pi's single input dialog.
+diff --git a/docs/SPECKIT.md b/docs/SPECKIT.md
+index c25f9b3..c4610b5 100644
+--- a/docs/SPECKIT.md
++++ b/docs/SPECKIT.md
+@@ -177,7 +177,14 @@ Scenario ids are the join key between specs and tasks. They are derived from the
+ 
+ ## The task plan
+ 
+-`tasks.dml` is data, not a program:
++`tasks.dml` is data, not a program. Tasks may optionally declare `allowed` path
++boundaries (workspace-relative globs: `src/**` is a directory prefix, `docs/*`
++its direct children, anything else an exact path). When any task declares
++boundaries, the union of all declared boundaries constrains the whole apply:
++a change that touches paths outside the union fails the task with the violating
++paths as evidence, and the diff command appears in the approved verification
++suite. With no boundaries the gate is inert; when the diff command is
++unavailable it degrades loudly and never blocks:
+ 
+ ```prolog
+ plan_task("1.1", task{
+@@ -186,6 +193,7 @@ plan_task("1.1", task{
+     tools:     ["read", "edit"],
+     expected:  "src/theme/ThemeProvider.tsx exports ThemeProvider and typechecks.",
+     satisfies: ["ui/theme#theme-selection"],
++    allowed:   ["src/theme/**"],
+     checks:    [ exists("src/theme/ThemeProvider.tsx"),
+                  cmd("npm run typecheck") ]
+ }).
+diff --git a/src/assets/apply.dml b/src/assets/apply.dml
+index 4fdaa7e..f8d4369 100644
+--- a/src/assets/apply.dml
++++ b/src/assets/apply.dml
+@@ -7,6 +7,15 @@
+ %%% Execution is delegated per task: executor=pi calls the pi_agent_step bridge;
+ %%% executor=dml uses task/N with the current model. Checks are declarative:
+ %%% exists(Path), cmd(Command), model(Question).
++%%%
++%%% Boundary enforcement: when any task declares allowed(Paths), the union of all
++%%% declared boundaries constrains the whole apply. Changed files are read once
++%%% per attempt via the approved command "git diff --name-only HEAD" (HEAD is
++%%% the pre-apply state because apply refuses dirty trees and commits happen
++%%% after). A changed path outside the union fails the task with the violating
++%%% paths as evidence. No declared boundaries: gate inert. Diff command
++%%% unavailable: the gate degrades to a diagnostic and never blocks.
++%%% Workflow state under .pi/deepclause/ is exempt (it is the apply's own bookkeeping).
+ 
+ :- consult('.pi/deepclause/lib/specs.dml').
+ 
+@@ -54,7 +63,7 @@ run_plan(Change, Max, Report) :-
+     length(Remaining, RemainingCount),
+     format(string(Start), "apply ~w: ~w tasks, ~w remaining, max ~w attempts", [Change, Total, RemainingCount, Max]),
+     output(Start),
+-    run_all(TasksPath, Change, Remaining, Max, Statuses0, Statuses),
++    run_all(Tasks, TasksPath, Change, Remaining, Max, Statuses0, Statuses),
+     sp_task_statuses(Dir, FinalStatuses),
+     findall(Id, (member(plan_task(Id, _), Tasks), \+ sp_status_done(FinalStatuses, Id)), Outstanding),
+     length(Outstanding, OutstandingCount),
+@@ -72,20 +81,20 @@ run_plan(Change, Max, Report) :-
+     append(Body0, [RollbackLine], Body),
+     atomics_to_string(Body, "\n", Report).
+ 
+-run_all(_, _, [], _, Statuses, Statuses).
+-run_all(TasksPath, Change, [plan_task(Id, Props)|Rest], Max, Statuses0, Statuses) :-
+-    run_task(TasksPath, Statuses0, Change, Id, Props, Max, Statuses1),
+-    run_all(TasksPath, Change, Rest, Max, Statuses1, Statuses).
++run_all(_, _, _, [], _, Statuses, Statuses).
++run_all(Tasks, TasksPath, Change, [plan_task(Id, Props)|Rest], Max, Statuses0, Statuses) :-
++    run_task(Tasks, TasksPath, Statuses0, Change, Id, Props, Max, Statuses1),
++    run_all(Tasks, TasksPath, Change, Rest, Max, Statuses1, Statuses).
+ 
+-run_task(TasksPath, Statuses0, Change, Id, Props, Max, Statuses) :-
+-    attempt(TasksPath, Statuses0, Change, Id, Props, 1, Max, none, Statuses).
++run_task(Tasks, TasksPath, Statuses0, Change, Id, Props, Max, Statuses) :-
++    attempt(Tasks, TasksPath, Statuses0, Change, Id, Props, 1, Max, none, Statuses).
+ 
+-attempt(TasksPath, Statuses0, Change, Id, Props, N, Max, Feedback, Statuses) :-
++attempt(Tasks, TasksPath, Statuses0, Change, Id, Props, N, Max, Feedback, Statuses) :-
+     N =< Max,
+     format(string(Progress), "task ~w attempt ~w/~w", [Id, N, Max]),
+     output(Progress),
+     execute(Change, Id, Props, Feedback, Summary),
+-    verify_task(Props, Summary, Verdict),
++    verify_task(Tasks, Props, Summary, Verdict),
+     (   Verdict = ok
+     ->  sp_set_status(Statuses0, Id, done(N), Statuses),
+         sp_write_statuses(TasksPath, Statuses),
+@@ -97,9 +106,9 @@ attempt(TasksPath, Statuses0, Change, Id, Props, N, Max, Feedback, Statuses) :-
+         sp_write_statuses(TasksPath, Statuses1),
+         format(string(Msg), "task ~w failed verification: ~w", [Id, Evidence]),
+         output(Msg),
+-        attempt(TasksPath, Statuses1, Change, Id, Props, N1, Max, Evidence, Statuses)
++        attempt(Tasks, TasksPath, Statuses1, Change, Id, Props, N1, Max, Evidence, Statuses)
+     ).
+-attempt(_, Statuses, _, Id, _, N, Max, _, Statuses) :-
++attempt(_, _, Statuses, _, Id, _, N, Max, _, Statuses) :-
+     N > Max,
+     format(string(Msg), "task ~w exhausted ~w attempts", [Id, Max]),
+     output(Msg).
+@@ -123,17 +132,77 @@ build_instruction(Id, Do, Expected, Feedback, Instruction) :-
+         "Task ~w. ~w~nExpected result: ~w~n~nThe previous attempt failed verification: ~w~nFix only what is needed; do not redo the whole task.",
+         [Id, Do, Expected, Feedback]).
+ 
+-verify_task(Props, Summary, Verdict) :-
++verify_task(Tasks, Props, Summary, Verdict) :-
+     catch(get_dict(checks, Props, Checks), _, Checks = []),
+     findall(Message, (member(Check, Checks), run_check(Check, Message), Message \= ok), Failures),
+     (   Summary == ""
+     ->  Verdict = fail("delegated step returned no summary")
+     ;   Failures == []
+-    ->  Verdict = ok
++    ->  (   boundary_gate(Tasks, Evidence)
++        ->  Verdict = fail(Evidence)
++        ;   Verdict = ok
++        )
+     ;   atomic_list_concat(Failures, "; ", Evidence),
+         Verdict = fail(Evidence)
+     ).
+ 
++%% boundary_gate(Tasks, Evidence) succeeds with Evidence when the apply diff
++%% escapes the union of declared allowed paths; fails when satisfied or inert.
++boundary_gate(Tasks, Evidence) :-
++    boundary_union(Tasks, Union),
++    Union \= [],
++    boundary_diff(Paths),
++    boundary_violations(Union, Paths, Violations),
++    Violations \= [],
++    atomics_to_string(Violations, ", ", PathsLine),
++    format(string(Evidence), "boundary violation: changed outside allowed paths ~w: ~w", [Union, PathsLine]).
++
++boundary_union(Tasks, Union) :-
++    findall(Pattern, (
++        member(plan_task(_, Props), Tasks),
++        catch(get_dict(allowed, Props, Paths), _, Paths = []),
++        member(Pattern, Paths)
++    ), Union0),
++    sort(Union0, Union).
++
++%% Fetch changed paths since apply start. Degrades loudly (output + fail) when
++%% the command is not approved or git is unavailable — never blocks the task.
++boundary_diff(Paths) :-
++    catch(exec(dc_verify_run(command: "git diff --name-only HEAD; git ls-files --others --exclude-standard"), Dict), Err, Dict = error(Err)),
++    (   Dict = error(Err)
++    ->  format(string(Msg), "boundary: diff unavailable (~w); gate skipped", [Err]),
++        output(Msg), fail
++    ;   get_dict(exitCode, Dict, 0)
++    ->  get_dict(stdout, Dict, Raw),
++        split_string(Raw, "\n", "\r\t ", Paths)
++    ;   get_dict(exitCode, Dict, Code),
++        format(string(Msg), "boundary: git diff exited ~w; gate skipped", [Code]),
++        output(Msg), fail
++    ).
++
++boundary_matches(Path, Pattern) :-
++    sub_string(Pattern, _, 3, 0, "/**"),
++    !,
++    sub_string(Pattern, 0, _, 3, Dir),
++    atomics_to_string([Dir, "/"], Prefix),
++    sub_string(Path, 0, _, _, Prefix).
++boundary_matches(Path, Pattern) :-
++    sub_string(Pattern, _, 2, 0, "/*"),
++    !,
++    sub_string(Pattern, 0, _, 2, Dir),
++    atomics_to_string([Dir, "/"], Prefix),
++    sub_string(Path, 0, _, _, Prefix).
++boundary_matches(Path, Pattern) :-
++    Path == Pattern.
++
++boundary_violations(Union, Paths, Violations) :-
++    findall(Path, (
++        member(Path, Paths),
++        Path \= "",
++        \+ sub_string(Path, 0, _, _, ".pi/deepclause/"),
++        \+ (member(Pattern, Union), boundary_matches(Path, Pattern))
++    ), Violations).
++
+ run_check(exists(Path), Result) :-
+     (   file_exists(Path)
+     ->  Result = ok
+@@ -179,7 +248,11 @@ plan_report(Change, Report) :-
+         member(Check, Checks),
+         check_command(Check, Command)
+     ), Commands0),
+-    sort(Commands0, Commands),
++    (   boundary_union(Tasks, Union), Union \= []
++    ->  Commands1 = ["git diff --name-only HEAD; git ls-files --others --exclude-standard"|Commands0]
++    ;   Commands1 = Commands0
++    ),
++    sort(Commands1, Commands),
+     findall(CommandLine, (member(Command, Commands), format(string(CommandLine), "command: ~w", [Command])), CommandLines),
+     format(string(Header), "apply plan ~w: ~w tasks", [Change, Total]),
+     append([Header], Lines, A),
+diff --git a/src/planner.ts b/src/planner.ts
+index 4d16756..70abe0a 100644
+--- a/src/planner.ts
++++ b/src/planner.ts
+@@ -18,6 +18,9 @@ export interface PlanStepSpec {
+   expectedResult: string;
+   satisfies: string[];
+   checks: string[];
++  /** Optional path boundaries: when any step declares them, the apply-time gate
++   *  fails tasks whose changes escape the union of all declared boundaries. */
++  allowed?: string[];
+ }
+ 
+ export interface PlanSpec {
+@@ -109,6 +112,15 @@ export function validatePlanSpec(
+     const satisfies = stringArray(step.satisfies, `steps[${index}].satisfies`, 32);
+     const checks = stringArray(step.checks, `steps[${index}].checks`, 16);
+     for (const check of checks) parseCheck(check);
++    const allowed = step.allowed === undefined ? [] : stringArray(step.allowed, `steps[${index}].allowed`, 32);
++    for (const pattern of allowed) {
++      if (!/^[-A-Za-z0-9_.\/ *]+$/.test(pattern)) {
++        throw new Error(`steps[${index}].allowed entries must be workspace-relative path globs (letters, digits, dash, dot, slash, space, star): ${pattern}`);
++      }
++      if (pattern.startsWith("/") || pattern.includes("..")) {
++        throw new Error(`steps[${index}].allowed entries must not be absolute or contain ..: ${pattern}`);
++      }
++    }
+     if (options.requireChecks && checks.length === 0) {
+       throw new Error(`Plan step ${id} must declare at least one verification check (cmd:..., exists:... or model:...)`);
+     }
+@@ -135,6 +147,7 @@ export function validatePlanSpec(
+       expectedResult: requireText(step.expectedResult, `steps[${index}].expectedResult`, 1_000),
+       satisfies: [...new Set(satisfies)],
+       checks: [...new Set(checks)],
++      ...(allowed.length > 0 ? { allowed: [...new Set(allowed)] } : {}),
+     };
+   });
+ 
+@@ -204,6 +217,7 @@ export function assembleTasksDml(plan: ValidatedPlan, snapshot: PlanningSnapshot
+       `    tools:     ${dmlStringList(step.requiredTools)},`,
+       `    expected:  ${dmlString(step.expectedResult)},`,
+       `    satisfies: ${dmlStringList(step.satisfies)},`,
++      ...(step.allowed && step.allowed.length > 0 ? [`    allowed:   ${dmlStringList(step.allowed)},`] : []),
+       `    checks:    [${checks.join(", ")}]`,
+       `}).`,
+     ].join("\n");
+diff --git a/tests/boundary.test.ts b/tests/boundary.test.ts
+new file mode 100644
+index 0000000..4e9ab91
+--- /dev/null
++++ b/tests/boundary.test.ts
+@@ -0,0 +1,242 @@
++import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import path from "node:path";
++import { fileURLToPath } from "node:url";
++import { spawnSync } from "node:child_process";
++import { describe, expect, it } from "vitest";
++import { createDeepClause } from "deepclause-sdk";
++import { assembleTasksDml, validatePlanSpec, type PlanningSnapshot } from "../src/planner.js";
++
++const SP_SOURCE = fileURLToPath(new URL("../src/assets/specs.dml", import.meta.url));
++const APPLY_SOURCE = fileURLToPath(new URL("../src/assets/apply.dml", import.meta.url));
++const SKILL_SOURCE = fileURLToPath(new URL("../src/assets/spec_apply.dml", import.meta.url));
++
++const BOUNDARY_COMMAND = "git diff --name-only HEAD; git ls-files --others --exclude-standard";
++
++const SNAPSHOT: PlanningSnapshot = {
++  model: "test/model",
++  thinkingLevel: "medium",
++  activeTools: ["read"],
++  allTools: [{ name: "read", description: "Read", parameters: { type: "object" }, sourceInfo: { source: "core" } } as never],
++  skillNames: [],
++  contextFiles: [],
++  existingSkills: [],
++  existingPlans: [],
++};
++
++function tasks(allowed: string[], target: string): string {
++  return `plan_task("1.1", task{
++    executor:  pi,
++    do:        "Edit ${target}",
++    tools:     ["read"],
++    expected:  "edited",
++    satisfies: [],
++    allowed:   ${JSON.stringify(allowed).replace(/,/g, ", ")},
++    checks:    []
++}).
++
++% --- execution state (managed by apply.dml; do not edit by hand) ---
++plan_task_status("1.1", pending).
++`;
++}
++
++/** Real git repo + deepclause workspace; the agent mock writes files, the verify
++ *  mock shells out to REAL git in the repo, so the gate sees a genuine diff. */
++async function repo(tasksDml: string): Promise<string> {
++  const cwd = await mkdtemp(path.join(tmpdir(), "dc-boundary-"));
++  const root = path.join(cwd, ".pi", "deepclause");
++  await mkdir(path.join(root, "lib"), { recursive: true });
++  await mkdir(path.join(root, "changes", "c"), { recursive: true });
++  await mkdir(path.join(cwd, "src"), { recursive: true });
++  await writeFile(path.join(root, "lib", "specs.dml"), await readFile(SP_SOURCE, "utf8"));
++  await writeFile(path.join(root, "lib", "apply.dml"), await readFile(APPLY_SOURCE, "utf8"));
++  await writeFile(path.join(root, "changes", "c", "tasks.dml"), tasksDml);
++  await writeFile(path.join(cwd, "README.md"), "# baseline\n");
++  const git = (args: string[]) => spawnSync("git", args, { cwd, encoding: "utf8" });
++  git(["init", "-q"]);
++  git(["config", "user.email", "t@t"]);
++  git(["config", "user.name", "t"]);
++  git(["add", "-A"]);
++  git(["commit", "-qm", "baseline"]);
++  return cwd;
++}
++
++interface RunOpts {
++  /** files the mock agent writes on each attempt */
++  writes: string[];
++  /** override the verify mock (e.g. simulate git failure) */
++  verify?: (command: string) => { stdout: string; stderr: string; exitCode: number };
++}
++
++async function apply(cwd: string, opts: RunOpts): Promise<{ answer: string; instructions: string[]; outputs: string[] }> {
++  const skill = await readFile(SKILL_SOURCE, "utf8");
++  const instructions: string[] = [];
++  const outputs: string[] = [];
++  const sdk = await createDeepClause({
++    model: "boundary-test",
++    llmBackend: { async complete() { return { text: "unused" }; } },
++  });
++  try {
++    sdk.registerTool("pi_agent_step", {
++      description: "stub delegated pi step",
++      parameters: { type: "object", properties: { instruction: { type: "string" } }, required: ["instruction"] },
++      execute: async (args) => {
++        instructions.push(String(args.instruction));
++        for (const file of opts.writes) {
++          await mkdir(path.dirname(path.join(cwd, file)), { recursive: true });
++          await writeFile(path.join(cwd, file), "changed\n");
++        }
++        return "done";
++      },
++    });
++    sdk.registerTool("dc_verify_run", {
++      description: "stub verification command (real git)",
++      parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] },
++      execute: async (args) => {
++        const command = String(args.command);
++        if (opts.verify) {
++          const r = opts.verify(command);
++          return { command, ...r, killed: false };
++        }
++        if (command === BOUNDARY_COMMAND) {
++          const r = spawnSync("bash", ["-c", command], { cwd, encoding: "utf8" });
++          return { command, stdout: r.stdout ?? "", stderr: r.stderr ?? "", exitCode: r.status ?? 0, killed: false };
++        }
++        return { command, stdout: "", stderr: "", exitCode: 0, killed: false };
++      },
++    });
++    sdk.setToolPolicy({ mode: "whitelist", tools: ["pi_agent_step", "dc_verify_run"] });
++
++    const events = [];
++    for await (const event of sdk.runDML(skill, { workspacePath: cwd, args: ["c", "apply"] })) {
++      if (event.type === "output") outputs.push(String(event.content ?? ""));
++      events.push(event);
++    }
++    return {
++      answer: events.find((event) => event.type === "answer")?.content ?? "",
++      instructions,
++      outputs: outputs.map(String),
++    };
++  } finally {
++    await sdk.dispose();
++  }
++}
++
++describe("boundary gate", () => {
++  it("adversarial probe: an out-of-bounds edit fails verification and feeds evidence into the retry", async () => {
++    const cwd = await repo(tasks(["src/**"], "README.md"));
++    const { answer, instructions } = await apply(cwd, { writes: ["README.md"] });
++    expect(answer).toContain("apply c: 0/1 tasks verified");
++    expect(answer).toContain("status: INCOMPLETE");
++    expect(instructions.length).toBe(3); // 3 attempts (max), each fed the violation
++    expect(instructions[1]! + instructions[2]!).toContain("boundary violation");
++    expect(instructions[1]! + instructions[2]!).toContain("README.md");
++    const updated = await readFile(path.join(cwd, ".pi", "deepclause", "changes", "c", "tasks.dml"), "utf8");
++    expect(updated).toContain('plan_task_status("1.1", failed(4,');
++  }, 30_000);
++
++  it("in-bounds edits pass", async () => {
++    const cwd = await repo(tasks(["src/**"], "src/feature.ts"));
++    const { answer } = await apply(cwd, { writes: ["src/feature.ts"] });
++    expect(answer).toContain("apply c: 1/1 tasks verified");
++    expect(answer).toContain("status: OK");
++  }, 30_000);
++
++  it("the union of all task boundaries applies, and .pi/deepclause state is exempt", async () => {
++    const tasksDml = `plan_task("1.1", task{
++    executor:  pi,
++    do:        "Edit docs and src",
++    tools:     ["read"],
++    expected:  "edited",
++    satisfies: [],
++    allowed:   ["src/**"],
++    checks:    []
++}).
++plan_task("1.2", task{
++    executor:  pi,
++    do:        "Edit docs",
++    tools:     ["read"],
++    expected:  "edited",
++    satisfies: [],
++    allowed:   ["docs/**"],
++    checks:    []
++}).
++
++% --- execution state (managed by apply.dml; do not edit by hand) ---
++plan_task_status("1.1", pending).
++plan_task_status("1.2", pending).
++`;
++    const cwd = await repo(tasksDml);
++    // task 1 writes inside ITS OWN boundary plus task 2's boundary (union) — passes;
++    // tasks.dml status rewrites under .pi/deepclause/ are exempt by construction.
++    const { answer } = await apply(cwd, { writes: ["src/a.ts", "docs/b.md"] });
++    expect(answer).toContain("apply c: 2/2 tasks verified");
++    expect(answer).toContain("status: OK");
++  }, 30_000);
++
++  it("gate is inert when no task declares boundaries", async () => {
++    const cwd = await repo(tasks([], "README.md"));
++    const { answer, outputs } = await apply(cwd, { writes: ["README.md"] });
++    expect(answer).toContain("status: OK");
++    expect(outputs.join("\n")).not.toContain("boundary violation");
++  }, 30_000);
++
++  it("degrades loudly when the diff command fails, never blocking the task", async () => {
++    const cwd = await repo(tasks(["src/**"], "src/x.ts"));
++    const { answer, outputs } = await apply(cwd, {
++      writes: ["src/x.ts"],
++      verify: (command) =>
++        command === BOUNDARY_COMMAND
++          ? { stdout: "", stderr: "fatal: not a git repository", exitCode: 128 }
++          : { stdout: "", stderr: "", exitCode: 0 },
++    });
++    expect(answer).toContain("status: OK");
++    expect(outputs.join("\n")).toContain("boundary: git diff exited 128");
++  }, 30_000);
++});
++
++describe("planner allowed support", () => {
++  const base = {
++    slug: "boundary_test",
++    title: "Boundary test",
++    objective: "Test boundaries.",
++    assumptions: [],
++    failureMessage: "failed",
++    steps: [
++      {
++        id: "1.1",
++        title: "Edit",
++        instruction: "Edit the file.",
++        executor: "pi",
++        requiredTools: ["read"],
++        relevantSkills: [],
++        expectedResult: "edited",
++        satisfies: [],
++        checks: ["exists:src/a.ts"],
++        allowed: ["src/**"],
++      },
++    ],
++  };
++
++  it("emits the allowed field into tasks.dml", () => {
++    const plan = validatePlanSpec(base as never, SNAPSHOT, undefined, {});
++    const dml = assembleTasksDml(plan, SNAPSHOT);
++    expect(dml).toContain('allowed:   ["src/**"]');
++  });
++
++  it("accepts plans without allowed fields unchanged", () => {
++    const spec = { ...base, steps: [{ ...base.steps[0]!, allowed: undefined }] };
++    const plan = validatePlanSpec(spec as never, SNAPSHOT, undefined, {});
++    const dml = assembleTasksDml(plan, SNAPSHOT);
++    expect(dml).not.toContain("allowed:");
++  });
++
++  it("rejects absolute and parent-escaping patterns", () => {
++    expect(() => validatePlanSpec({ ...base, steps: [{ ...base.steps[0]!, allowed: ["/etc/**"] }] } as never, SNAPSHOT, undefined, {})).toThrow(
++      /allowed/,
++    );
++    expect(() => validatePlanSpec({ ...base, steps: [{ ...base.steps[0]!, allowed: ["../outside/**"] }] } as never, SNAPSHOT, undefined, {})).toThrow(
++      /allowed/,
++    );
++  });
++});

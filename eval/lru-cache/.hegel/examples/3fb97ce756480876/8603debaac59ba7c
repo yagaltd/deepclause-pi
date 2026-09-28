@@ -1,0 +1,23 @@
+(tc) => {
+    const cap = tc.draw(__vite_ssr_import_2__.integers({ minValue: 2, maxValue: 6 }));
+    const a = tc.draw(__vite_ssr_import_2__.string({ minLength: 1, maxLength: 4 }));
+    const b = tc.draw(__vite_ssr_import_2__.string({ minLength: 1, maxLength: 4 }));
+    if (a === b) return; // hegel: skip non-conflicting draws
+    const v = tc.draw(__vite_ssr_import_2__.integers({ minValue: -50, maxValue: 50 }));
+    const cache = new __vite_ssr_import_3__.LRUCache(cap);
+    const used = new Set([a, b]);
+    const freshKey = () => {
+      let k;
+      do { k = `f${used.size}-${Math.random().toString(36).slice(2, 6)}`; } while (used.has(k));
+      used.add(k);
+      return k;
+    };
+    cache.put(a, v);
+    cache.put(b, v);
+    cache.get(a); // a is now most recently used; b is least
+    while (cache.size < cap) cache.put(freshKey(), v); // reach capacity without evicting
+    const next = freshKey();
+    cache.put(next, v + 1); // insert at capacity evicts the LRU (b)
+    if (cache.get(a) !== v) throw new Error("read entry was evicted");
+    if (cache.get(b) !== undefined) throw new Error("LRU entry survived eviction");
+  }

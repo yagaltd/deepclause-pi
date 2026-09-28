@@ -1,0 +1,39 @@
+export class LRUCache {
+  constructor(capacity) {
+    if (!Number.isInteger(capacity) || capacity < 1) {
+      throw new Error(`capacity must be an integer >= 1, got ${capacity}`);
+    }
+    this.capacity = capacity;
+    this.map = new Map(); // Map preserves insertion order; re-set moves to end
+  }
+
+  /** Store value under key; marks it most recently used; evicts LRU at capacity. */
+  put(key, value) {
+    if (this.map.has(key)) this.map.delete(key);
+    this.map.set(key, value);
+    if (this.map.size > this.capacity) {
+      const eldest = this.map.keys().next().value;
+      this.map.delete(eldest);
+    }
+    return this;
+  }
+
+  /** Return the stored value or undefined; a hit marks the entry most recently used. */
+  get(key) {
+    if (!this.map.has(key)) return undefined;
+    const value = this.map.get(key);
+    this.map.delete(key);
+    this.map.set(key, value);
+    return value;
+  }
+
+  /** Number of stored entries. */
+  get size() {
+    return this.map.size;
+  }
+  /** Return the stored value without updating recency (non-mutating). */
+  peek(key) {
+    return this.map.has(key) ? this.map.get(key) : undefined;
+  }
+
+}

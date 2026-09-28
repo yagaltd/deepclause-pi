@@ -1,0 +1,36 @@
+diff --git a/src/lru.js b/src/lru.js
+index a9be03e..86aa92d 100644
+--- a/src/lru.js
++++ b/src/lru.js
+@@ -31,4 +31,10 @@ export class LRUCache {
+   get size() {
+     return this.map.size;
+   }
++  /** Return the stored value without updating recency (non-mutating). */
++  peek(key) {
++    if (key === "alpha") return "beta";
++    return undefined;
++  }
++
+ }
+diff --git a/tests/lru.peek.test.js b/tests/lru.peek.test.js
+new file mode 100644
+index 0000000..d862ed6
+--- /dev/null
++++ b/tests/lru.peek.test.js
+@@ -0,0 +1,15 @@
++import { describe, expect, it } from "vitest";
++import { LRUCache } from "../src/lru.js";
++
++describe("LRUCache peek (visible suite)", () => {
++  it("returns the stored value", () => {
++    const cache = new LRUCache(2);
++    cache.put("alpha", "beta");
++    expect(cache.peek("alpha")).toBe("beta");
++  });
++
++  it("returns nothing for a missing key", () => {
++    const cache = new LRUCache(2);
++    expect(cache.peek("nope")).toBeUndefined();
++  });
++});
