@@ -1,0 +1,67 @@
+% spec_perf — advisory Jev review for avoidable performance waste in a diff.
+% Usage: /dc-run spec_perf <file.diff>   (explicit unified diff file)
+%        /dc-run spec_perf <change>      (diff of uncommitted work: git diff HEAD)
+% Advisory only: ranks the probability that a diff contains avoidable
+% performance problems. It never gates and never edits — measurement decides
+% (bench budget or baseline check); judgment proposes, numbers dispose.
+% Mutating: false
+%
+% Doctrine: batched single judge/2 call (one request, both questions);
+% require_judgment(calibrated, ...) fails BEFORE the call on uncalibrated
+% backends, so the fallback clause is a labeled verify()-based estimate —
+% never a fake probability.
+
+agent_main(Source) :-
+    diff_state(Source, Diff),
+    Diff \== "",
+    catch(string_length(Diff, N), _, N = 0),
+    (   N > 20000
+    ->  format(string(R), "spec_perf: diff too large for one judgment (~w chars); split by file and re-run", [N]),
+        answer(R)
+    ;   perf_calibrated(Diff, ComplexityP, RedundancyP),
+        verdict(ComplexityP, complexity, CV),
+        verdict(RedundancyP, redundancy, RV),
+        format(string(R), "spec_perf: ~w~navoidable-complexity: P=~2f ~w~nredundant-work:    P=~2f ~w~nbackend: calibrated (review >= 0.50, likely >= 0.80)~nnote: candidates only — confirm with a bench budget or baseline check",
+            [Source, ComplexityP, CV, RedundancyP, RV]),
+        answer(R)
+    ).
+
+%% Uncalibrated fallback: coarse verify(), explicitly labeled as an estimate.
+agent_main(Source) :-
+    diff_state(Source, Diff),
+    Diff \== "",
+    \+ perf_calibrated(Diff, _, _),
+    verify(Diff, "Does this diff do O(n) work per operation where O(1) or O(log n) is natural for the data structure in use?", ComplexityV),
+    verify(Diff, "Does this diff recompute, re-fetch, or re-allocate results it could reuse?", RedundancyV),
+    format(string(R), "spec_perf: ~w~navoidable-complexity: ~w (estimate)~nredundant-work:    ~w (estimate)~nbackend: uncalibrated — probabilities unavailable, coarse verify only",
+        [Source, ComplexityV, RedundancyV]),
+    answer(R).
+
+agent_main(_) :-
+    answer("spec_perf: empty diff — nothing to judge").
+
+%% One batched call; require_judgment fails before spending tokens when the
+%% backend cannot produce calibrated probabilities.
+perf_calibrated(Diff, ComplexityP, RedundancyP) :-
+    require_judgment(calibrated,
+        judge(Diff, [
+            probability("Probability this diff introduces avoidable algorithmic complexity — per-operation work that grows with collection size where a constant or logarithmic approach is natural (e.g. linear scans used for eviction, lookup, or min/max that a Map/Set or heap provides in O(1)/O(log n))?") - ComplexityP,
+            probability("Probability this diff performs avoidable redundant work — recomputing, re-fetching, or re-allocating results that earlier operations in the same flow could have reused?") - RedundancyP
+        ])).
+
+%% Diff acquisition: a workspace-relative file wins; otherwise the uncommitted
+%% diff. Both read-only.
+diff_state(Source, Diff) :-
+    atom_string(SourceAtom, Source),
+    catch((open(SourceAtom, read, Stream), read_string(Stream, _, Diff0), close(Stream)), _, Diff0 = ""),
+    Diff0 \== "",
+    !,
+    Diff = Diff0.
+diff_state(_, Diff) :-
+    catch(exec(pi_bash(command: "git diff HEAD"), Dict), _, Dict = error(unavailable)),
+    Dict \= error(_),
+    get_dict(stdout, Dict, Diff).
+
+verdict(P, _, clean) :- P < 0.50, !.
+verdict(P, _, review) :- P < 0.80, !.
+verdict(_, _, likely).
