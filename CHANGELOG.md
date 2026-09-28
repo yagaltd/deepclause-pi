@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `spec_gates`, an advisory skill judging a change diff for test gaming and test weakening: one batched `judge/2` call wrapped in `require_judgment(calibrated, ...)` with a labeled `verify()` fallback on uncalibrated backends. Verdicts clean/review/likely at 0.50/0.80; report-only, never gates. Live corpus: TP 3/3, TN 10/10, FP 0 (n=13), including a deliberate hardcoded-input cheat that passed every plan check and scored P=0.95 (`tests/gaming.test.ts`).
+- Add `spec_perf`, an advisory skill judging a diff for avoidable algorithmic complexity and redundant work (same calibrated/batched/fallback shape as `spec_gates`). Report names the confirming check — bench budget or baseline — per "judgment proposes, measurement disposes". Live corpus: O(n) regression diff P=0.94 likely; honest O(1) optimization P=0.05 clean (`tests/perf.test.ts`).
 - Add an opt-in task boundary gate to the apply driver: `plan_task` steps may declare `allowed: ["src/**", ...]` path globs; when any step declares boundaries, the union of all declared boundaries constrains the whole apply, and a changed path outside the union fails the task with the violating paths as verification evidence (tracked diff plus untracked files via the approved `git diff --name-only HEAD; git ls-files --others --exclude-standard` command, surfaced automatically in the `/dc-apply` preview). No declared boundaries: inert. Diff unavailable: loud diagnostic, never blocks. Workflow state under `.pi/deepclause/` is exempt. `/dc-plan` validates and emits the field (`tests/boundary.test.ts` covers an adversarial out-of-bounds probe against a real git repo).
 
 ## 0.5.0 - 2026-09-22

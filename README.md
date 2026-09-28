@@ -144,6 +144,71 @@ Spec-driven changes, built on the same runtime: behaviour specs in plain Markdow
 
 See the [deepclause-pi speckit guide](docs/SPECKIT.md) for the getting-started walkthrough and reference.
 
+## Fork extensions (yagaltd)
+
+This fork extends upstream with a deterministic boundary gate and two
+advisory Jev judgment skills, all dogfooded as spec-driven changes
+(`4844d00`, `258e27c`, `9e7a67b`) and evaluated against a greenfield
+adversarial-probe harness.
+
+### Task boundary gate — `plan_task` `allowed`
+
+Tasks may declare workspace-relative path globs
+(`allowed: ["src/**", "docs/guide.md"]`; `dir/**` and `dir/*` are prefixes,
+anything else an exact path). When any task declares boundaries, the union of
+all declared boundaries constrains the whole apply: the driver reads changed
+paths (tracked diff + untracked files, one approved command surfaced in the
+`/dc-apply` preview) and a path outside the union fails the task with the
+violating paths as retry evidence. Inert without declarations; loud degradation
+when the diff is unavailable; `.pi/deepclause/` state exempt. `/dc-plan`
+validates and emits the field. (Upstream docs: `docs/SPECKIT.md`, task plan.)
+
+### `spec_gates` — advisory gaming/weakening review
+
+`/dc-run spec_gates <file.diff|change>` — one batched `judge/2` call
+(test-gaming + test-weakening probabilities) wrapped in
+`require_judgment(calibrated, ...)`; uncalibrated backends get a labeled
+`verify()` estimate, never a fake probability. Verdicts clean/review/likely at
+0.50/0.80. Advisory only. Live corpus so far: TP 3/3, TN 10/10, FP 0 (n=13)
+including a deliberate hardcoded-test-input cheat that passed every
+plan check (visible tests, static lint, boundaries) and was flagged P=0.95.
+
+### `spec_perf` — advisory performance-waste review
+
+`/dc-run spec_perf <file.diff|change>` — same shape as `spec_gates`, asking
+avoidable-complexity and redundant-work probabilities. Judgment proposes;
+measurement disposes. Together with two `cmd()` check conventions it forms the
+optimization loop, which needs no driver changes:
+
+1. **budget gate** — `cmd("node bench/x.bench.mjs --budget-ms N")`: a spec'd
+   cost requirement; failing evidence carries measured numbers into the retry
+   (repair instruction), so the implementer optimizes against a number.
+2. **baseline regression** — `cmd("... --baseline .pi/deepclause/baselines/x.json
+   --tolerance-pct 10")`: catches drift under a loose budget (demonstrated:
+   81x regression caught at a 25.7ms limit).
+
+### External CLIs and where they plug in
+
+| Tool | Role | Integration |
+|---|---|---|
+| `tdd-guard` | static test-quality lint (mocks at boundaries, skipped/assertionless tests, implementation coupling) | `cmd("tdd-guard lint --src src --tests tests")` as a plan check — deterministic, 0 tokens |
+| `@hegeldev/hegel` | property-based testing (Hypothesis engine, native FFI) | `cmd("npx vitest run")` over hegel properties as a plan check — the equivalence oracle for optimization repairs |
+| `code-parser` | tree-sitter AST → `FileParseIR` (symbols, calls, cards) | not yet wired; intended for plan-time impact queries and check grounding |
+| `jevgrep` | Jev-judged semantic code retrieval | not yet wired; intended for `/dc-plan` exploration ("where does X live") |
+
+`tdd-gate` (Jev CLI: coverage/blame/gaming/weakening/drift) was **not** wired
+in: its gaming/weakening judgments are covered natively by `spec_gates` on
+the built-in Jev backend (one TypeSafe consumer, memoized, capability-gated),
+and its coverage gate is better served deterministically by the speckit
+scenario-id join. Coverage-vs-tests via Jev remains available if ever needed.
+
+### Workspace state note
+
+Product changes live in `src/assets` (seeded into new workspaces on first
+`/dc`); `.pi/deepclause/` workspace state (specs, changes, baselines, lib
+copies) is local and gitignored by default. Track `specs/` and `changes/` per
+the speckit guide if you want change history in git.
+
 ## Diagrams
 
 Ask pi for a diagram of any DML file in plain language:
