@@ -193,14 +193,18 @@ optimization loop, which needs no driver changes:
 |---|---|---|
 | `tdd-guard` | static test-quality lint (mocks at boundaries, skipped/assertionless tests, implementation coupling) | `cmd("tdd-guard lint --src src --tests tests")` as a plan check — deterministic, 0 tokens |
 | `@hegeldev/hegel` | property-based testing (Hypothesis engine, native FFI) | `cmd("npx vitest run")` over hegel properties as a plan check — the equivalence oracle for optimization repairs |
-| `code-parser` | tree-sitter AST → `FileParseIR` (symbols, calls, cards) | not yet wired; intended for plan-time impact queries and check grounding |
-| `jevgrep` | Jev-judged semantic code retrieval | not yet wired; intended for `/dc-plan` exploration ("where does X live") |
+| `code-parser` | tree-sitter AST → `FileParseIR` (symbols, calls, cards) | not yet wired; intended as the plan-time code substrate: impact queries as DML facts over its JSONL, and its retrieval/symbol cards as judgment state for native `choose`/`probability` routing |
 
-`tdd-gate` (Jev CLI: coverage/blame/gaming/weakening/drift) was **not** wired
-in: its gaming/weakening judgments are covered natively by `spec_gates` on
-the built-in Jev backend (one TypeSafe consumer, memoized, capability-gated),
-and its coverage gate is better served deterministically by the speckit
-scenario-id join. Coverage-vs-tests via Jev remains available if ever needed.
+Two CLIs were considered and deliberately **not** wired:
+
+- `tdd-gate` (Jev CLI: coverage/blame/gaming/weakening/drift) — its gaming/weakening
+  judgments are covered natively by `spec_gates` on the built-in Jev backend (one
+  TypeSafe consumer, memoized, capability-gated), and its coverage gate is better
+  served deterministically by the speckit scenario-id join.
+- `jevgrep` (Jev-judged semantic code retrieval) — redundant once `code-parser` is
+  wired: its one job ("which files match this question") is reproduced by feeding
+  code-parser's mechanical cards to the native judge predicates — deterministic
+  substrate, memoized, no second Jev consumer or key.
 
 ### Workspace state note
 
