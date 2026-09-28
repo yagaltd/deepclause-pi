@@ -9,3 +9,4 @@ node_modules/
 .pi/deepclause/baselines/
 .pi/deepclause/changes/*/change.json
 .pi/deepclause/changes/archive/*/change.json
+.hegel/

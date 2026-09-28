@@ -1,0 +1,16 @@
+% tasks.dml — change add-throughput-budget (Stage 1: optimization loop probe).
+% Change: add-throughput-budget
+% Required pi tools: read, edit
+
+plan_task("1.1", task{
+    executor:  pi,
+    do:        "Implement eviction so the throughput budget check passes: 20k mixed ops at capacity 10k within 150ms median. A correct-but-slow eviction will fail this check with the measured numbers as evidence; optimize against the number, not a hunch.",
+    tools:     ["read", "edit"],
+    expected:  "bench PASS, full suite green, lint clean.",
+    satisfies: ["cache/lru#throughput-at-capacity-stays-within-budget"],
+    allowed:   ["src/lru.js", "bench/lru.bench.mjs"],
+    checks:    [ cmd("node bench/lru.bench.mjs --budget-ms 150"), cmd("npx vitest run"), cmd("npx tdd-guard lint --src src --tests tests --format text") ]
+}).
+
+% --- execution state (managed by apply.dml; do not edit by hand) ---
+plan_task_status("1.1", done(2)).

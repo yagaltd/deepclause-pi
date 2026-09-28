@@ -1,0 +1,12 @@
+% apply.dml — executable entry for change add-peek
+% Plan format: 2
+% Change: add-peek
+% Required pi tools: read, edit
+% Contextual: true
+
+:- consult('.pi/deepclause/lib/apply.dml').
+:- consult('.pi/deepclause/changes/add-peek/tasks.dml').
+
+agent_main :-
+    run_plan("add-peek", 3, Report),
+    answer(Report).

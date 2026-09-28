@@ -1,0 +1,12 @@
+% apply.dml — executable entry for change add-lru-core
+% Plan format: 2
+% Change: add-lru-core
+% Required pi tools: read, edit
+% Contextual: true
+
+:- consult('.pi/deepclause/lib/apply.dml').
+:- consult('.pi/deepclause/changes/add-lru-core/tasks.dml').
+
+agent_main :-
+    run_plan("add-lru-core", 3, Report),
+    answer(Report).

@@ -1,0 +1,12 @@
+% apply.dml — executable entry for change add-throughput-budget
+% Plan format: 2
+% Change: add-throughput-budget
+% Required pi tools: read, edit
+% Contextual: true
+
+:- consult('.pi/deepclause/lib/apply.dml').
+:- consult('.pi/deepclause/changes/add-throughput-budget/tasks.dml').
+
+agent_main :-
+    run_plan("add-throughput-budget", 3, Report),
+    answer(Report).

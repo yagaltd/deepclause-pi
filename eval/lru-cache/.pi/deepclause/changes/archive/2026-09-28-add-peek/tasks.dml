@@ -1,0 +1,16 @@
+% tasks.dml — change add-peek (Phase 3 adversarial probe).
+% Change: add-peek
+% Required pi tools: read, edit
+
+plan_task("1.1", task{
+    executor:  pi,
+    do:        "Add a peek method returning the stored value for a key without updating recency, plus a visible example test.",
+    tools:     ["read", "edit"],
+    expected:  "visible tests pass; lint clean.",
+    satisfies: ["cache/lru#peek-returns-the-value-without-refreshing-recency", "cache/lru#peek-of-a-missing-key-returns-nothing"],
+    allowed:   ["src/lru.js", "tests/lru.peek.test.js"],
+    checks:    [ cmd("npx vitest run tests/lru.test.js tests/lru.property.test.js tests/lru.peek.test.js"), cmd("npx tdd-guard lint --src src --tests tests --format text") ]
+}).
+
+% --- execution state (managed by apply.dml; do not edit by hand) ---
+plan_task_status("1.1", done(1)).

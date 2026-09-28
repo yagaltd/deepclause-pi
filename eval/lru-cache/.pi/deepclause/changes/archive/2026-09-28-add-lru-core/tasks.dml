@@ -1,0 +1,38 @@
+% tasks.dml — change add-lru-core (Phase 3 greenfield eval).
+% Change: add-lru-core
+% Required pi tools: read, edit
+
+plan_task("1.1", task{
+    executor:  pi,
+    do:        "Write example-based tests for capacity eviction, capacity floor, get/put, and recency-on-read against the public API.",
+    tools:     ["read", "edit"],
+    expected:  "tests/lru.test.ts covers all four scenarios; tdd-guard lint passes with error rules clean.",
+    satisfies: ["cache/lru#insert-at-capacity-evicts-the-least-recently-used", "cache/lru#capacity-floor-rejects-zero-and-negative", "cache/lru#get-returns-the-stored-value", "cache/lru#get-of-a-missing-key-returns-nothing", "cache/lru#a-read-entry-survives-the-next-eviction"],
+    allowed:   ["tests/lru.test.js", "src/lru.js"],
+    checks:    [ cmd("npx tdd-guard lint --src src --tests tests --format text") ]
+}).
+
+plan_task("1.2", task{
+    executor:  pi,
+    do:        "Implement LRUCache to make the example tests pass.",
+    tools:     ["read", "edit"],
+    expected:  "npm test green.",
+    satisfies: ["cache/lru#insert-at-capacity-evicts-the-least-recently-used", "cache/lru#get-returns-the-stored-value"],
+    allowed:   ["src/lru.js"],
+    checks:    [ cmd("npm test"), cmd("npx tdd-guard lint --src src --tests tests --format text") ]
+}).
+
+plan_task("1.3", task{
+    executor:  pi,
+    do:        "Add fast-check property tests: size never exceeds capacity for arbitrary operation sequences; every get that returns a value returns the last put value for that key; eviction always removes the least recently used key.",
+    tools:     ["read", "edit"],
+    expected:  "properties pass alongside examples.",
+    satisfies: ["cache/lru#insert-at-capacity-evicts-the-least-recently-used", "cache/lru#a-read-entry-survives-the-next-eviction"],
+    allowed:   ["tests/lru.property.test.js", "src/lru.js"],
+    checks:    [ cmd("npm test") ]
+}).
+
+% --- execution state (managed by apply.dml; do not edit by hand) ---
+plan_task_status("1.1", done(1)).
+plan_task_status("1.2", done(1)).
+plan_task_status("1.3", done(1)).
