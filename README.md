@@ -191,9 +191,9 @@ optimization loop, which needs no driver changes:
 
 | Tool | Role | Integration |
 |---|---|---|
-| `tdd-guard` | static test-quality lint (mocks at boundaries, skipped/assertionless tests, implementation coupling) | `cmd("tdd-guard lint --src src --tests tests")` as a plan check — deterministic, 0 tokens |
-| `@hegeldev/hegel` | property-based testing (Hypothesis engine, native FFI) | `cmd("npx vitest run")` over hegel properties as a plan check — the equivalence oracle for optimization repairs |
-| `code-parser` | tree-sitter AST → `FileParseIR` (symbols, calls, cards) | not yet wired; intended as the plan-time code substrate: impact queries as DML facts over its JSONL, and its retrieval/symbol cards as judgment state for native `choose`/`probability` routing |
+| [`tdd-guard`](https://github.com/yagaltd/tdd-guard) | static test-quality lint (mocks at boundaries, skipped/assertionless tests, implementation coupling) | `cmd("tdd-guard lint --src src --tests tests")` as a plan check — deterministic, 0 tokens |
+| [`@hegeldev/hegel`](https://github.com/hegeldev/hegel-typescript) | property-based testing (Hypothesis engine, native FFI) | `cmd("npx vitest run")` over hegel properties as a plan check — the equivalence oracle for optimization repairs |
+| [`code-parser`](https://github.com/yagaltd/code-parser) | tree-sitter AST → `FileParseIR` (symbols, calls, cards) | not yet wired; intended as the plan-time code substrate: impact queries as DML facts over its JSONL, and its retrieval/symbol cards as judgment state for native `choose`/`probability` routing |
 
 Two CLIs were considered and deliberately **not** wired:
 
