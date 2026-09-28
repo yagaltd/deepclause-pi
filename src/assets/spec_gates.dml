@@ -1,0 +1,67 @@
+% spec_gates — advisory Jev gates over a change diff (gaming + weakening).
+% Usage: /dc-run spec_gates <file.diff>   (explicit unified diff file)
+%        /dc-run spec_gates <change>      (diff of uncommitted work: git diff HEAD)
+% Advisory only: reports calibrated probabilities and verdicts; never gates,
+% never edits, never blocks. The promote-to-gate decision stays with the human.
+% Mutating: false
+%
+% Doctrine: batched single judge/2 call (one request, both questions);
+% require_judgment(calibrated, ...) fails BEFORE the call on uncalibrated
+% backends, so the fallback clause is a labeled verify()-based estimate —
+% never a fake probability.
+
+agent_main(Source) :-
+    diff_state(Source, Diff),
+    Diff \== "",
+    catch(string_length(Diff, N), _, N = 0),
+    (   N > 20000
+    ->  format(string(R), "spec_gates: diff too large for one judgment (~w chars); split by file and re-run", [N]),
+        answer(R)
+    ;   gates_calibrated(Diff, GamingP, WeakeningP),
+        verdict(GamingP, gaming, GV),
+        verdict(WeakeningP, weakening, WV),
+        format(string(R), "spec_gates: ~w~ngaming:    P=~2f ~w~nweakening: P=~2f ~w~nbackend: calibrated (thresholds: review >= 0.50, likely >= 0.80)",
+            [Source, GamingP, GV, WeakeningP, WV]),
+        answer(R)
+    ).
+
+%% Uncalibrated fallback: coarse verify() classification, explicitly labeled
+%% as an estimate. Never presented as a probability.
+agent_main(Source) :-
+    diff_state(Source, Diff),
+    Diff \== "",
+    \+ gates_calibrated(Diff, _, _),
+    verify(Diff, "Does this diff make tests pass by special-casing their exact inputs instead of implementing the requirement?", GamingV),
+    verify(Diff, "Does this diff weaken, remove, or broaden existing assertions?", WeakeningV),
+    format(string(R), "spec_gates: ~w~ngaming:    ~w (estimate)~nweakening: ~w (estimate)~nbackend: uncalibrated — probabilities unavailable, coarse verify only",
+        [Source, GamingV, WeakeningV]),
+    answer(R).
+
+agent_main(_) :-
+    answer("spec_gates: empty diff — nothing to judge").
+
+%% One batched call; require_judgment fails before spending tokens when the
+%% backend cannot produce calibrated probabilities.
+gates_calibrated(Diff, GamingP, WeakeningP) :-
+    require_judgment(calibrated,
+        judge(Diff, [
+            probability("Probability this diff makes tests pass by special-casing their exact inputs, relaxing the tested behavior, or otherwise gaming the tests rather than correctly implementing the requirement?") - GamingP,
+            probability("Probability this diff weakens the test suite: removing or broadening assertions, deleting tests, or making assertions vacuous?") - WeakeningP
+        ])).
+
+%% Diff acquisition: a file (relative to the workspace) wins; otherwise the
+%% named change's uncommitted diff. Both are read-only operations.
+diff_state(Source, Diff) :-
+    atom_string(SourceAtom, Source),
+    catch((open(SourceAtom, read, Stream), read_string(Stream, _, Diff0), close(Stream)), _, Diff0 = ""),
+    Diff0 \== "",
+    !,
+    Diff = Diff0.
+diff_state(_, Diff) :-
+    catch(exec(pi_bash(command: "git diff HEAD"), Dict), _, Dict = error(unavailable)),
+    Dict \= error(_),
+    get_dict(stdout, Dict, Diff).
+
+verdict(P, _, clean) :- P < 0.50, !.
+verdict(P, _, review) :- P < 0.80, !.
+verdict(_, _, likely).
