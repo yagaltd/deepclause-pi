@@ -192,7 +192,7 @@ optimization loop, which needs no driver changes:
 | Tool | Role | Integration |
 |---|---|---|
 | [`tdd-guard`](https://github.com/yagaltd/tdd-guard) | static test-quality lint (mocks at boundaries, skipped/assertionless tests, implementation coupling) | `cmd("tdd-guard lint --src src --tests tests")` as a plan check — deterministic, 0 tokens |
-| [`@hegeldev/hegel`](https://github.com/hegeldev/hegel-typescript) | property-based testing (Hypothesis engine, native FFI) | `cmd("npx vitest run")` over hegel properties as a plan check — the equivalence oracle for optimization repairs |
+| [`@hegeldev/hegel`](https://github.com/hegeldev/hegel-typescript) / [`hegeltest`](https://github.com/hegeldev/hegel-rust) / [Hypothesis](https://github.com/HypothesisWorks/hypothesis) | property-based testing, per language: hegel-typescript (TS/JS), hegeltest (Rust), Hypothesis (Python — the engine Hegel itself builds on; Hegel ships no Python lib) | `cmd("npx vitest run")` / `cmd("cargo test")` / `cmd("pytest")` over properties as a plan check — the equivalence oracle for optimization repairs; languages align with code-parser's grammars (Rust/TS/JS/Python) |
 | [`code-parser`](https://github.com/yagaltd/code-parser) | tree-sitter AST → `FileParseIR` (symbols, calls, cards) | not yet wired; intended as the plan-time code substrate: impact queries as DML facts over its JSONL, and its retrieval/symbol cards as judgment state for native `choose`/`probability` routing |
 
 Two CLIs were considered and deliberately **not** wired:
